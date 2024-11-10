@@ -1,93 +1,53 @@
-import { createServer } from "node:http";
-import { parse, fileURLToPath } from "node:url";
-import fs from "node:fs";
-import path from "node:path";
+import express from "express";
+import multer from "multer";
+import { createGzip } from "node:zlib";
+import { Readable } from "node:stream";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const app = express();
+const upload = multer();
 
-createServer(async (req, res) => {
-  if (req.method === "GET") {
-    // Serve the upload form
-    res.writeHead(200, { "Content-Type": "text/html" });
-    res.end(`
-      <form action="/upload" method="post" enctype="multipart/form-data">
-        <input type="file" name="image" />
-        <input type="submit" value="Upload Image" />
+app.get("/", (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>File Upload and Compression</title>
+    </head>
+    <body>
+      <h1>Upload a file to compress</h1>
+      <form action="/upload" method="POST" enctype="multipart/form-data">
+        <input type="file" name="file" required />
+        <button type="submit">Upload and Compress</button>
       </form>
-    `);
-    return;
+    </body>
+    </html>
+  `);
+});
+
+app.post("/upload", upload.single("file"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).send("No file uploaded");
   }
 
-  if (req.method === "POST") {
-    const contentType = req.headers["content-type"];
-    console.log("contentType: ", contentType);
-    const boundary = contentType.split("boundary=")[1];
-    if (!boundary) {
-      res.writeHead(400);
-      res.end("No boundary in multipart/form-data");
-      return;
-    }
+  // Create a gzip stream to compress the uploaded file
+  const gzipStream = createGzip();
 
-    let chunks = [];
+  // Set the response headers for the compressed file
+  res.setHeader("Content-Disposition", `attachment; filename=${req.file.originalname}.gz`);
+  res.setHeader("Content-Type", "application/gzip");
 
-    for await (let chunk of req) {
-      chunks.push(chunk);
-    }
-
-    const buffer = Buffer.concat(chunks);
-
-    const bufferString = buffer.toString("latin1");
-    const parts = bufferString.split(`--${boundary}`);
-
-    // Remove any empty strings or extra '--' at the end
-    parts.shift();
-    parts.pop();
-
-    parts.forEach((part) => {
-      part = part.trim();
-      if (!part) return;
-
-      const [headerPart, content] = part.split("\r\n\r\n");
-      const headers = headerPart.split("\r\n");
-      const headerObj = {};
-
-      headers.forEach((headerLine) => {
-        const [key, value] = headerLine.split(": ");
-        headerObj[key.toLowerCase()] = value;
-      });
-
-      const contentDisposition = headerObj["content-disposition"];
-      if (contentDisposition) {
-        const matches = contentDisposition.match(/name="([^"]+)"(?:;\s*filename="([^"]+)")?/);
-        const name = matches[1];
-        const filename = matches[2];
-
-        if (filename) {
-          const contentBuffer = Buffer.from(content, "latin1");
-
-          // Ensure the uploads directory exists
-          const uploadDir = path.join(__dirname, "uploads");
-          if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir);
-          }
-
-          const filePath = path.join(uploadDir, path.basename(filename));
-
-          fs.writeFile(filePath, contentBuffer, (err) => {
-            if (err) {
-              console.error(err);
-            } else {
-              console.log(`File saved: ${filename}`);
-            }
-          });
-        }
-      }
+  // Pipe the uploaded file (req.file.buffer) through the gzip stream and into the response
+  const readableStream = Readable.from(req.file.buffer);
+  readableStream
+    .pipe(gzipStream) // Compress the file
+    .pipe(res) // Stream the compressed file back to the client
+    .on("finish", () => {
+      console.log("File successfully compressed and sent to client");
     });
+});
 
-    console.log("buffer: ", buffer);
-  }
-
-  res.statusCode = 200;
-  res.end("Hello World!");
-}).listen(3000, () => console.log("Server is running on http://localhost:3000"));
+app.listen(3000, () => {
+  console.log("Server started on http://localhost:3000");
+});
